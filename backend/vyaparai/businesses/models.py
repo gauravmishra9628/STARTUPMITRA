@@ -66,7 +66,7 @@ class SavedBusiness(models.Model):
 
 class BusinessRoadmap(models.Model):
     """AI-generated business roadmaps"""
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='roadmaps')
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='business_roadmaps')
     business = models.ForeignKey(BusinessIdea, on_delete=models.CASCADE, related_name='roadmaps')
     roadmap_data = models.JSONField()
     is_completed = models.BooleanField(default=False)

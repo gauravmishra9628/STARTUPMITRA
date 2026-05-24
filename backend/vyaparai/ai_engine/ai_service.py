@@ -3,7 +3,11 @@ AI Service for OpenAI and Gemini integration
 """
 import os
 import logging
+import json
+import re
 from typing import Optional
+
+from .prompt_templates import PromptTemplates
 
 logger = logging.getLogger(__name__)
 
@@ -35,18 +39,16 @@ class AIService:
             from openai import OpenAI
             client = OpenAI(api_key=self.openai_api_key)
 
-            system_prompt = self._get_mentor_prompt(mentor_type, language)
-            messages = [
-                {'role': 'system', 'content': system_prompt}
-            ]
+            system_prompt = PromptTemplates.mentor_system_prompt(mentor_type, language, context)
+            messages = [{'role': 'system', 'content': system_prompt}]
 
             if context:
-                messages.append({'role': 'system', 'content': f"Context: {context}"})
+                messages.append({'role': 'system', 'content': f"Extra context: {context}"})
 
             messages.append({'role': 'user', 'content': message})
 
             response = client.chat.completions.create(
-                model='gpt-4',
+                model=os.environ.get('OPENAI_MODEL', 'gpt-4o-mini'),
                 messages=messages,
                 max_tokens=1000,
                 temperature=0.7
@@ -63,32 +65,16 @@ class AIService:
             import google.generativeai as genai
             genai.configure(api_key=self.gemini_api_key)
 
-            model = genai.GenerativeModel('gemini-pro')
-            system_prompt = self._get_mentor_prompt(mentor_type, language)
+            model = genai.GenerativeModel(os.environ.get('GEMINI_MODEL', 'gemini-1.5-flash'))
+            system_prompt = PromptTemplates.mentor_system_prompt(mentor_type, language, context)
 
             prompt = f"{system_prompt}\n\nUser: {message}"
-            if context:
-                prompt += f"\nContext: {context}"
 
             response = model.generate_content(prompt)
             return response.text
         except Exception as e:
             logger.error(f"Gemini error: {str(e)}")
             return self._fallback_response(message, mentor_type, language)
-
-    def _get_mentor_prompt(self, mentor_type: str, language: str) -> str:
-        """Get system prompt based on mentor type and language"""
-        language_note = "Respond in Hindi" if language == 'hi' else "Respond in English"
-
-        prompts = {
-            'startup_strategist': f"You are a Startup Strategist expert. {language_note} Help users with business planning, market analysis, and startup strategies. Provide practical, actionable advice.",
-            'financial_advisor': f"You are a Financial Advisor expert. {language_note} Help users with investment analysis, ROI calculations, profit estimation, and financial planning.",
-            'marketing_guru': f"You are a Marketing Guru expert. {language_note} Help users with growth hacking, marketing strategies, customer acquisition, and brand building.",
-            'tech_architect': f"You are a Tech Architect expert. {language_note} Help users with technical planning, technology stacks, and implementation strategies.",
-            'general': f"You are a helpful business AI assistant for VyaparAI. {language_note} Help entrepreneurs with business ideas, startup guidance, and growth strategies.",
-        }
-
-        return prompts.get(mentor_type, prompts['general'])
 
     def _fallback_response(self, message: str, mentor_type: str, language: str) -> str:
         """Fallback response when AI is unavailable"""
@@ -114,28 +100,18 @@ class AIService:
         from openai import OpenAI
         client = OpenAI(api_key=self.openai_api_key)
 
-        prompt = f"""Generate a detailed business roadmap for: {business_idea}
-User skills: {', '.join(user_skills)}
-Available investment: ₹{investment}
-Language: {'Hindi' if language == 'hi' else 'English'}
-
-Provide a JSON response with:
-- phases: array of phases with title, duration, tasks, and key_milestones
-- total_duration: estimated months
-- risk_mitigation: array of potential risks and mitigations
-- success_metrics: key metrics to track"""
+        prompt = PromptTemplates.roadmap_prompt(business_idea, user_skills, investment, language)
 
         response = client.chat.completions.create(
-            model='gpt-4',
+            model=os.environ.get('OPENAI_MODEL', 'gpt-4o-mini'),
             messages=[{'role': 'user', 'content': prompt}],
             max_tokens=2000,
             temperature=0.7
         )
 
-        import json
         try:
-            return json.loads(response.choices[0].message.content)
-        except:
+            return self._parse_json_response(response.choices[0].message.content)
+        except Exception:
             return self._fallback_roadmap(business_idea, user_skills, investment, language)
 
     def _gemini_roadmap(self, business_idea: str, user_skills: list, investment: float, language: str) -> dict:
@@ -143,25 +119,104 @@ Provide a JSON response with:
         import google.generativeai as genai
         genai.configure(api_key=self.gemini_api_key)
 
-        model = genai.GenerativeModel('gemini-pro')
+        model = genai.GenerativeModel(os.environ.get('GEMINI_MODEL', 'gemini-1.5-flash'))
 
-        prompt = f"""Generate a detailed business roadmap for: {business_idea}
-User skills: {', '.join(user_skills)}
-Available investment: ₹{investment}
-Language: {'Hindi' if language == 'hi' else 'English'}
-
-Provide a JSON response with:
-- phases: array of phases with title, duration, tasks, and key_milestones
-- total_duration: estimated months
-- risk_mitigation: array of potential risks and mitigations
-- success_metrics: key metrics to track"""
+        prompt = PromptTemplates.roadmap_prompt(business_idea, user_skills, investment, language)
 
         response = model.generate_content(prompt)
-        import json
         try:
-            return json.loads(response.text)
-        except:
+            return self._parse_json_response(response.text)
+        except Exception:
             return self._fallback_roadmap(business_idea, user_skills, investment, language)
+
+    def generate_recommendations(self, recommendation_type: str, budget: str | None, skills: list, interests: list, language: str = 'en') -> dict:
+        """Generate recommendation payloads for business discovery."""
+        try:
+            if self.preferred_model == 'gemini' and self.gemini_api_key:
+                return self._gemini_recommendations(recommendation_type, budget, skills, interests, language)
+            if self.openai_api_key:
+                return self._openai_recommendations(recommendation_type, budget, skills, interests, language)
+            return self._fallback_recommendations(recommendation_type, budget, skills, interests, language)
+        except Exception as e:
+            logger.error(f"Recommendation generation error: {str(e)}")
+            return self._fallback_recommendations(recommendation_type, budget, skills, interests, language)
+
+    def _openai_recommendations(self, recommendation_type: str, budget: str | None, skills: list, interests: list, language: str) -> dict:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=self.openai_api_key)
+        prompt = PromptTemplates.recommendation_prompt(recommendation_type, budget, skills, interests, language)
+
+        response = client.chat.completions.create(
+            model=os.environ.get('OPENAI_MODEL', 'gpt-4o-mini'),
+            messages=[{'role': 'user', 'content': prompt}],
+            max_tokens=1800,
+            temperature=0.6,
+        )
+
+        try:
+            return self._parse_json_response(response.choices[0].message.content)
+        except Exception:
+            return self._fallback_recommendations(recommendation_type, budget, skills, interests, language)
+
+    def _gemini_recommendations(self, recommendation_type: str, budget: str | None, skills: list, interests: list, language: str) -> dict:
+        import google.generativeai as genai
+
+        genai.configure(api_key=self.gemini_api_key)
+        model = genai.GenerativeModel(os.environ.get('GEMINI_MODEL', 'gemini-1.5-flash'))
+        prompt = PromptTemplates.recommendation_prompt(recommendation_type, budget, skills, interests, language)
+
+        response = model.generate_content(prompt)
+
+        try:
+            return self._parse_json_response(response.text)
+        except Exception:
+            return self._fallback_recommendations(recommendation_type, budget, skills, interests, language)
+
+    def _fallback_recommendations(self, recommendation_type: str, budget: str | None, skills: list, interests: list, language: str) -> dict:
+        return {
+            'recommendations': [
+                {
+                    'title': 'Cloud Kitchen Starter',
+                    'category': 'Food & Beverage',
+                    'estimated_investment': budget or '₹3L-₹5L',
+                    'expected_profit': '25-40% ROI',
+                    'difficulty': 'Intermediate',
+                    'reason': 'Low physical footprint and strong local demand.',
+                },
+                {
+                    'title': 'Micro SaaS Lead Tool',
+                    'category': 'Tech & SaaS',
+                    'estimated_investment': budget or '₹1L-₹2L',
+                    'expected_profit': '35-55% ROI',
+                    'difficulty': 'Beginner',
+                    'reason': 'Can be launched lean with subscription revenue.',
+                },
+            ],
+            'insights': [
+                'Validate demand with 10-20 customer interviews.',
+                'Start with one channel before expanding marketing spend.',
+            ],
+            'next_steps': [
+                'Shortlist 3 ideas that fit your skills.',
+                'Estimate monthly burn and break-even point.',
+                'Create a 30-day pilot plan.',
+            ],
+        }
+
+    def _parse_json_response(self, raw_content: str) -> dict:
+        """Parse model output that may include code fences or leading text."""
+        cleaned = raw_content.strip()
+        cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned)
+        cleaned = re.sub(r'\s*```$', '', cleaned)
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            start = cleaned.find('{')
+            end = cleaned.rfind('}')
+            if start != -1 and end != -1 and end > start:
+                return json.loads(cleaned[start:end + 1])
+            raise
 
     def _fallback_roadmap(self, business_idea: str, user_skills: list, investment: float, language: str) -> dict:
         """Fallback roadmap"""

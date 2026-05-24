@@ -27,6 +27,9 @@ INSTALLED_APPS = [
     'businesses',
     'ai_engine',
     'community',
+    'analytics',
+    'payments',
+    'roadmaps',
 ]
 
 MIDDLEWARE = [

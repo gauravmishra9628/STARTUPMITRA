@@ -23,6 +23,8 @@ class AIChatView(APIView):
 
         if session_id:
             session = AIChatSession.objects.filter(id=session_id, user=request.user).first()
+            if session is None:
+                return Response({'error': 'Session not found'}, status=status.HTTP_404_NOT_FOUND)
         else:
             session = AIChatSession.objects.create(
                 user=request.user,
@@ -95,13 +97,20 @@ class AIRecommendationView(APIView):
         interests = request.data.get('interests', [])
         language = request.data.get('language', 'en')
 
-        recommendation_data = {
+        recommendation_data = ai_service.generate_recommendations(
+            recommendation_type,
+            user_budget,
+            user_skills,
+            interests,
+            language,
+        )
+
+        recommendation_data.update({
             'type': recommendation_type,
             'budget': user_budget,
             'skills': user_skills,
             'interests': interests,
-            'generated_recommendations': []
-        }
+        })
 
         AIRecommendation.objects.create(
             user=request.user,
